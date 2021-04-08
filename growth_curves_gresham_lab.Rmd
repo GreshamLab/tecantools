@@ -1,0 +1,254 @@
+---
+title: "Growth curves"
+author: "Grace Avecilla"
+output:
+  html_notebook: default
+  pdf_document: default
+---
+
+# Growth curves requirements
+When you perform a growth curve, I recommend doing at least 3 technical replicates per biological replicate. I also recommend setting a set number of cycles rather than a specific time, since the max time you can do is 24 hours (for my settings, I have done 530 cycles which ends up being just over 48 hours)
+
+To run this notebook, you need:
+
+* OD data from the Tecan in a csv where well data is in columns, the first row is well names, and the first column is time stamps in seconds 
+* A sample sheet, which should have columns: Well, Sample,	Bio_rep,	Tech_rep,	Drug
+  + The Well column should not have 0s in the well names (i.e. A1, not A01)
+  + You can add additional columns after Tech_rep which will be output as well metadata with the growth curve information
+  + For blank wells, put 'B' in the Sample column of the sample sheet
+* To fill out the chunk below
+* To check the output of chunk 4 check-outliers for outliers, and specify wells with outliers in chunk 5 specify-outliers
+
+This notebook will output a csv with the mean growth curve data for each biological replicate and any associated meta data.  
+It will also knit to a pdf containing plots summarizing growth curve data
+
+
+```{r}
+# Path to directory with csv with OD data and sample sheet - put the last / after
+filepath = '~/my_od_folder/'
+# sample sheet file name
+s_sheet = 'samplesheet.csv'
+# data csv
+data_file = 'data.csv'
+# number of cycles
+cycles = 530
+# which well you want to use as your blank reference
+blank_ref = 'B1'
+# output csv name
+out = 'output.csv'
+```
+
+
+```{r include=FALSE }
+#knitr::opts_chunk$set(fig.height=6, fig.width=5,
+#                      cache=TRUE, autodep = TRUE, cache.path = 'facet-rep-labels/')
+library(tidyverse)
+library(growthcurver)
+setwd(filepath)
+theme_set(theme_minimal())
+```
+
+
+```{r include=FALSE, eval = T}
+samplesheet = read_csv(paste0(filepath, s_sheet))
+data_od = read_csv(paste0(filepath,data_file), 
+                   skip = 0, n_max = cycles) %>% 
+  mutate(time=as.numeric(str_remove(X1,"s"))/60/60, blank = !!as.name(blank_ref)) %>% #designate blank column for growthcurver. remove s from time and convert to numeric, divide by 60 2x to go from seconds to hours
+  select(-X1, -X98)
+```
+
+#Plot all data - OD
+
+```{r "check-outliers", echo=F}
+data_od_for_plot = data_od %>% select(-blank) %>% 
+  pivot_longer(cols = -time, names_to = "well", values_to = "od") %>% 
+  left_join(samplesheet, by = c("well" = "Well")) %>%
+  unite(Sample_Well, well, Sample, sep = " ", remove = FALSE)
+
+ggplot(data_od_for_plot %>% filter(Sample != "B"), aes(time, od, color = as.factor(Tech_rep))) +
+  geom_line() +
+  facet_grid(Sample~Bio_rep) +
+  xlab("Time (hours)") 
+
+
+ggplot(data_od_for_plot %>% filter(Sample == "B"), aes(time, od, color = as.factor(Tech_rep))) +
+  geom_line() +
+  facet_grid(Sample~Bio_rep) +
+  xlab("Time (hours)") +
+  ggtitle("Blank wells")
+
+ggplot(data_od_for_plot, aes(time, od, color = as.factor(Bio_rep))) +
+  geom_line() +
+  facet_wrap(~Sample_Well, ncol=12) +
+  xlab("Time (hours)")
+  
+```
+```{r "specify-outliers"}
+# wells to remove
+outlier_wells = c('B4','B9')
+```
+
+```{r include=F}
+#remove outliers
+for(i in length(outlier_wells)) {
+  data_od = data_od %>%
+    select(!-!as.name(outlier_wells[i]))
+}
+```
+#Fit data to logistic equation
+
+```{r include=FALSE}
+gc_out <- SummarizeGrowthByPlate(data_od, 
+                                 bg_correct = "blank", 
+                                 plot_fit = FALSE) %>% 
+  left_join(samplesheet, by = c("sample" = "Well")) %>%
+  rename(well = sample, sample = Sample)
+```
+
+# Plot r, k, N0, t_gen, and sigma by sample
+(based on OD, from growthcurver logistic equation fit)  
+ * r is growth rate
+ * k is carrying capacity
+ * N0 is starting population size
+ * t_gen is the fastest possible generation time  
+ * t_mid is the time to half maximal k
+ * sigma is a measure of the goodnesss of fit of the parameters   
+```{r echo=F}
+ggplot(gc_out %>% filter(sample != "B"), 
+       aes(sample, r)) +
+  geom_boxplot(outlier.shape = NA) +
+  ggbeeswarm::geom_beeswarm(aes(color = as.factor(Bio_rep)),dodge.width = 0) +
+  ylab("growth rate (r) hour-1")
+
+ggplot(gc_out %>% filter(sample != "B"), 
+       aes(sample, k)) +
+  geom_boxplot(outlier.shape = NA) +
+  ggbeeswarm::geom_beeswarm(aes(color = as.factor(Bio_rep)),dodge.width = 0) +
+  ylab("carrying capacity (k)")
+
+ggplot(gc_out %>% filter(sample != "B"), 
+              aes(sample, n0)) +
+  geom_boxplot(outlier.shape = NA) +
+  ggbeeswarm::geom_beeswarm(aes(color = as.factor(Bio_rep)),dodge.width = 0) +
+  ylab("starting population size (N0)")
+
+ggplot(gc_out %>% filter(sample != "B"), 
+              aes(sample, t_gen)) +
+  geom_boxplot(outlier.shape = NA) +
+  ggbeeswarm::geom_beeswarm(aes(color = as.factor(Bio_rep)),dodge.width = 0) +
+  ylab("generation time")
+
+ggplot(gc_out %>% filter(sample != "B"), 
+              aes(sample, t_mid)) +
+  geom_boxplot(outlier.shape = NA) +
+  ggbeeswarm::geom_beeswarm(aes(color = as.factor(Bio_rep)),dodge.width = 0) +
+  ylab("time to half maximal k")
+
+ggplot(gc_out %>% filter(sample != "B"), aes(sigma,fill = as.factor(Bio_rep))) +
+  geom_histogram() +
+  facet_grid(Drug~sample)
+```
+Summarize by sample
+```{r echo=F}
+summary = gc_out %>% group_by(sample) %>%
+  summarise(mean_r = mean(r), var_r = var(r), mean_k = mean(k), var_k = var(k), 
+            mean_gen = mean(t_gen), var_gen =  var(t_gen)) 
+summary %>%
+  knitr::kable()
+```
+Plot logistic fits over data
+```{r echo=F}
+# As in the simple example, load the package and the data. 
+library(growthcurver)
+d <- data_od %>% select(gc_out$well[which(gc_out$sample != "B")], time)
+
+# Let's create an output data frame to store the results in. 
+# We'll create it so that it is the right size (it's faster this way!), 
+# but leave it empty.
+num_analyses <- length(names(d)) - 1
+d_gc <- data.frame(sample = character(num_analyses),
+                   k = numeric(num_analyses),
+                   n0  = numeric(num_analyses),
+                   r = numeric(num_analyses),
+                   t_mid = numeric(num_analyses),
+                   t_gen = numeric(num_analyses),
+                   auc_l = numeric(num_analyses),
+                   auc_e = numeric(num_analyses),
+                   sigma = numeric(num_analyses),
+                   stringsAsFactors = FALSE)
+
+
+
+# Now, loop through all of the columns in the data frame. For each column,
+# run Growthcurver, save the most useful metrics in the output data frame,
+# and make a plot of all the growth curve data and their best fits.
+
+# First, create a plot for each of the wells in the 96-well plate.
+# Uncomment the next line to save the plots from your 96-well plate to a 
+# pdf file in the working directory.
+# pdf("growthcurver.pdf", height = 8.5, width = 11)
+par(mfcol = c(8,12))
+par(mar = c(0.25,0.25,0.25,0.25))
+y_lim_max <- max(d[,setdiff(names(d), "time")]) - min(d[,setdiff(names(d), "time")])
+
+n <- 1    # keeps track of the current row in the output data frame
+for (col_name in names(d)) {
+  
+  # Don't process the column called "time". 
+  # It contains time and not absorbance data.
+  if (col_name != "time")  {
+
+    # Create a temporary data frame that contains just the time and current col
+    d_loop <- d[, c("time", col_name)]
+    
+    # Do the background correction.
+    # Background correction option 1: subtract the minimum value in a column
+    #                                 from all measurements in that column
+        min_value <- min(d_loop[, col_name])
+    d_loop[, col_name] <- d_loop[, col_name] - min_value
+    # Background correction option 2: subtract the mean value of blank wells
+    #                                 over the course the experiment
+    #                                 (Replace B2, D8, G11 with the column
+    #                                  names of your media-only wells)
+    #d$blank <- apply(d[, c("B2", "D8", "G11")], 1, mean)
+    #d$A1 <- d$A1 - d$blank
+    
+    # Now, call Growthcurver to calculate the metrics using SummarizeGrowth
+    gc_fit <- SummarizeGrowth(data_t = d_loop[, "time"], 
+                              data_n = d_loop[, col_name],
+                              bg_correct = "none")
+    
+    # Now, add the metrics from this column to the next row (n) in the 
+    # output data frame, and increment the row counter (n)
+    d_gc$sample[n] <- col_name
+    d_gc[n, 2:9] <- c(gc_fit$vals$k,
+                      gc_fit$vals$n0,
+                      gc_fit$vals$r,
+                      gc_fit$vals$t_mid,
+                      gc_fit$vals$t_gen,
+                      gc_fit$vals$auc_l,
+                      gc_fit$vals$auc_e,
+                      gc_fit$vals$sigma)
+    n <- n + 1
+    
+    # Finally, plot the raw data and the fitted curve
+    # Here, I'll just print some of the data points to keep the file size smaller
+    n_obs <- length(gc_fit$data$t)
+    idx_to_plot <- 1:20 / 20 * n_obs
+    plot(gc_fit$data$t[idx_to_plot], gc_fit$data$N[idx_to_plot], 
+         pch = 20, 
+         #xlim = c(0, trim_at_time), 
+         ylim = c(0, y_lim_max),
+         cex = 0.6, xaxt = "n", yaxt = "n")
+     text(x = 5, y = y_lim_max, labels = col_name, pos = 1)
+     lines(gc_fit$data$t, predict(gc_fit$model), col = "red")
+  }
+}
+
+```
+
+# Output data
+```{r echo=F}
+write_csv(gc_out, paste0(filepath,out))
+```
+
